@@ -1,0 +1,128 @@
+apply plugin: 'java'
+
+repositories {
+        mavenCentral()
+}
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath "org.codehaus.gpars:gpars:1.2.1",
+                "net.masterthought:cucumber-reporting:3.4.0"
+    }
+}
+
+sourceSets {
+    main.java.srcDirs = ['src/main/java']
+    test.java.srcDirs = ['src/test/java']
+    test.resources.srcDirs = ['src/test/resources']
+}
+
+configurations {
+    cucumberRuntime {
+        extendsFrom testRuntime
+    }
+}
+
+dependencies {
+    testCompile 'info.cukes:cucumber-junit:1.2.5'
+    testCompile 'info.cukes:cucumber-picocontainer:1.2.5'
+    testCompile 'junit:junit:4.12'
+}
+
+test {
+    ignoreFailures = true
+    testLogging {
+        exceptionFormat = 'full'
+        showStandardStreams = true
+    }
+    //beforeTest { descriptor ->
+     //   logger.lifecycle("Running test: " + descriptor)
+   // }
+}
+
+Map<String, Integer> applicationThreadCount = ["RD":3, "manualentry":5]
+def threadCount
+def appName
+if (project.hasProperty("app")) {
+    appName = "/" + "$app" + "/"
+    threadCount = applicationThreadCount.get(app)
+} else {
+    appName = "/"
+    threadCount = 4
+}
+
+task testInSequence  {
+    dependsOn compileTestJava
+    doLast {
+        javaexec {
+            //jvmArgs = ["-Xms256m","-Xmx512m"]
+            ignoreExitValue = true
+            main = "cucumber.api.cli.Main"
+            classpath = configurations.cucumberRuntime + sourceSets.main.output + sourceSets.test.output
+            args = ['--plugin', 'pretty',
+                    '--plugin', "json:build/cucumber${appName}person.json",
+                    '--tags', '~@ignore',
+                    '--glue', 'cucumber.myfirst',
+                    "src/test/resources/features$appName"]
+        }
+        generateReport(appName)
+    }
+}
+
+import groovyx.gpars.GParsPool
+import net.masterthought.cucumber.ReportBuilder
+import net.masterthought.cucumber.Configuration
+import net.masterthought.cucumber.Reportable
+
+task testInParallel  {
+    dependsOn compileTestJava
+    doLast {
+        def features = fileTree(dir: "${project.projectDir}/src/test/resources/features$appName").include '**/*.feature'
+
+        GParsPool.withPool(threadCount) {
+            features.eachParallel { File file ->
+                javaexec {
+                    ignoreExitValue = true
+                    main = "cucumber.api.cli.Main"
+                    classpath = configurations.cucumberRuntime + sourceSets.main.output + sourceSets.test.output
+                    args = ['--plugin', 'pretty',
+                            '--plugin', "json:build/cucumber$appName${file.name}.json",
+                            '--tags', '~@ignore',
+                            '--glue', 'cucumber.myfirst', "src/test/resources/features$appName${file.name}"]
+                }
+                println("${file.name}: Scenario output: build/cucumber$appName${file.name}.log ")
+            }
+        }
+        generateReport(appName)
+    }
+}
+
+task gr << {
+    generateReport(appName)
+}
+
+
+
+def generateReport(appName) {
+    def jsonReports = fileTree(dir: "build/cucumber$appName").include '**/*.json'.toString()
+    File reportOutputDirectory = new File("build/cucumber$appName");
+
+    List<String> jsonReportFiles = new ArrayList<String>();
+    jsonReports.each { File file ->
+        jsonReportFiles.add("build/cucumber$appName${file.name}".toString());
+    }
+
+    Configuration configuration = new Configuration(reportOutputDirectory, "person");
+    // optional configuration
+    configuration.setParallelTesting(true);
+    configuration.setRunWithJenkins(false);
+    configuration.setBuildNumber("121");
+
+    ReportBuilder reportBuilder = new ReportBuilder(jsonReportFiles, configuration);
+    Reportable result = reportBuilder.generateReports();
+    println("Report available on: build/cucumber" + appName + "cucumber-html-reports/overview-features.html")
+}
